@@ -11,11 +11,30 @@ type DashboardStats = {
   lastRehearsalDate: string | null;
 };
 
+type BirthdayMember = {
+  id: string;
+  name: string;
+  birthday_day: number | null;
+  birthday_month: number | null;
+};
+
+type DashboardData = {
+  stats: DashboardStats;
+  todaysBirthdays: BirthdayMember[];
+  upcomingBirthdays: BirthdayMember[];
+};
+
 const emptyStats: DashboardStats = {
   totalMembers: 0,
   totalRehearsals: 0,
   lastRehearsalAttendance: 0,
   lastRehearsalDate: null,
+};
+
+const emptyDashboardData: DashboardData = {
+  stats: emptyStats,
+  todaysBirthdays: [],
+  upcomingBirthdays: [],
 };
 
 function formatDate(date: string) {
@@ -26,17 +45,127 @@ function formatDate(date: string) {
   }).format(new Date(`${date}T00:00:00`));
 }
 
+function formatBirthday(member: BirthdayMember) {
+  if (!member.birthday_day || !member.birthday_month) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(2024, member.birthday_month - 1, member.birthday_day));
+}
+
+function getBirthdayDateForYear(member: BirthdayMember, year: number) {
+  if (!member.birthday_day || !member.birthday_month) {
+    return null;
+  }
+
+  const date = new Date(
+    year,
+    member.birthday_month - 1,
+    member.birthday_day,
+  );
+
+  if (
+    date.getMonth() !== member.birthday_month - 1 ||
+    date.getDate() !== member.birthday_day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function getDaysUntilBirthday(member: BirthdayMember, today: Date) {
+  const thisYearBirthday = getBirthdayDateForYear(
+    member,
+    today.getFullYear(),
+  );
+
+  if (!thisYearBirthday) {
+    return null;
+  }
+
+  const nextBirthday =
+    thisYearBirthday < today
+      ? getBirthdayDateForYear(member, today.getFullYear() + 1)
+      : thisYearBirthday;
+
+  if (!nextBirthday) {
+    return null;
+  }
+
+  return Math.round(
+    (nextBirthday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+  );
+}
+
+function getBirthdayLists(members: BirthdayMember[]) {
+  const currentDate = new Date();
+  const today = new Date(
+    currentDate.getFullYear(),
+    currentDate.getMonth(),
+    currentDate.getDate(),
+  );
+
+  const membersWithDaysUntilBirthday = members
+    .map((member) => ({
+      member,
+      daysUntilBirthday: getDaysUntilBirthday(member, today),
+    }))
+    .filter(
+      (
+        item,
+      ): item is {
+        member: BirthdayMember;
+        daysUntilBirthday: number;
+      } => item.daysUntilBirthday !== null,
+    );
+
+  const todaysBirthdays = membersWithDaysUntilBirthday
+    .filter((item) => item.daysUntilBirthday === 0)
+    .map((item) => item.member)
+    .sort((firstMember, secondMember) =>
+      firstMember.name.localeCompare(secondMember.name),
+    );
+
+  const upcomingBirthdays = membersWithDaysUntilBirthday
+    .filter(
+      (item) => item.daysUntilBirthday > 0 && item.daysUntilBirthday <= 7,
+    )
+    .sort((firstItem, secondItem) => {
+      if (firstItem.daysUntilBirthday !== secondItem.daysUntilBirthday) {
+        return firstItem.daysUntilBirthday - secondItem.daysUntilBirthday;
+      }
+
+      return firstItem.member.name.localeCompare(secondItem.member.name);
+    })
+    .map((item) => item.member);
+
+  return { todaysBirthdays, upcomingBirthdays };
+}
+
 export default function Home() {
   const [stats, setStats] = useState<DashboardStats>(emptyStats);
+  const [todaysBirthdays, setTodaysBirthdays] = useState<BirthdayMember[]>([]);
+  const [upcomingBirthdays, setUpcomingBirthdays] = useState<BirthdayMember[]>(
+    [],
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
 
   const fetchStats = useCallback(async () => {
     if (!supabase) {
-      return { stats: emptyStats, error: null };
+      return { data: emptyDashboardData, error: null };
     }
 
-    const [membersResult, rehearsalsResult, lastRehearsalResult] =
+    const [
+      membersResult,
+      rehearsalsResult,
+      lastRehearsalResult,
+      birthdayMembersResult,
+    ] =
       await Promise.all([
         supabase.from("members").select("id", {
           count: "exact",
@@ -52,18 +181,33 @@ export default function Home() {
           .order("date", { ascending: false })
           .limit(1)
           .maybeSingle(),
+        supabase
+          .from("members")
+          .select("id, name, birthday_day, birthday_month")
+          .not("birthday_day", "is", null)
+          .not("birthday_month", "is", null),
       ]);
 
     if (membersResult.error) {
-      return { stats: emptyStats, error: membersResult.error.message };
+      return { data: emptyDashboardData, error: membersResult.error.message };
     }
 
     if (rehearsalsResult.error) {
-      return { stats: emptyStats, error: rehearsalsResult.error.message };
+      return { data: emptyDashboardData, error: rehearsalsResult.error.message };
     }
 
     if (lastRehearsalResult.error) {
-      return { stats: emptyStats, error: lastRehearsalResult.error.message };
+      return {
+        data: emptyDashboardData,
+        error: lastRehearsalResult.error.message,
+      };
+    }
+
+    if (birthdayMembersResult.error) {
+      return {
+        data: emptyDashboardData,
+        error: birthdayMembersResult.error.message,
+      };
     }
 
     let lastRehearsalAttendance = 0;
@@ -76,18 +220,29 @@ export default function Home() {
         .eq("status", "present");
 
       if (attendanceResult.error) {
-        return { stats: emptyStats, error: attendanceResult.error.message };
+        return {
+          data: emptyDashboardData,
+          error: attendanceResult.error.message,
+        };
       }
 
       lastRehearsalAttendance = attendanceResult.count ?? 0;
     }
 
+    const { todaysBirthdays, upcomingBirthdays } = getBirthdayLists(
+      (birthdayMembersResult.data ?? []) as BirthdayMember[],
+    );
+
     return {
-      stats: {
-        totalMembers: membersResult.count ?? 0,
-        totalRehearsals: rehearsalsResult.count ?? 0,
-        lastRehearsalAttendance,
-        lastRehearsalDate: lastRehearsalResult.data?.date ?? null,
+      data: {
+        stats: {
+          totalMembers: membersResult.count ?? 0,
+          totalRehearsals: rehearsalsResult.count ?? 0,
+          lastRehearsalAttendance,
+          lastRehearsalDate: lastRehearsalResult.data?.date ?? null,
+        },
+        todaysBirthdays,
+        upcomingBirthdays,
       },
       error: null,
     };
@@ -103,7 +258,9 @@ export default function Home() {
         return;
       }
 
-      setStats(result.stats);
+      setStats(result.data.stats);
+      setTodaysBirthdays(result.data.todaysBirthdays);
+      setUpcomingBirthdays(result.data.upcomingBirthdays);
       setMessage(result.error);
       setIsLoading(false);
     }
@@ -170,6 +327,64 @@ export default function Home() {
             <p className="mt-2 text-sm text-zinc-600">{card.detail}</p>
           </div>
         ))}
+      </div>
+
+      <div className="mt-8 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-md border border-zinc-200 bg-white p-5">
+          <h2 className="text-base font-semibold">Today</h2>
+          <div className="mt-4">
+            {isLoading ? (
+              <p className="text-sm text-zinc-500">Loading birthdays...</p>
+            ) : todaysBirthdays.length > 0 ? (
+              <ul className="divide-y divide-zinc-100">
+                {todaysBirthdays.map((member) => (
+                  <li
+                    key={member.id}
+                    className="flex items-center justify-between gap-4 py-3 text-sm"
+                  >
+                    <span className="font-medium text-zinc-950">
+                      {member.name}
+                    </span>
+                    <span className="text-zinc-500">
+                      {formatBirthday(member)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-zinc-500">No birthdays today.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-md border border-zinc-200 bg-white p-5">
+          <h2 className="text-base font-semibold">Upcoming birthdays</h2>
+          <div className="mt-4">
+            {isLoading ? (
+              <p className="text-sm text-zinc-500">Loading birthdays...</p>
+            ) : upcomingBirthdays.length > 0 ? (
+              <ul className="divide-y divide-zinc-100">
+                {upcomingBirthdays.map((member) => (
+                  <li
+                    key={member.id}
+                    className="flex items-center justify-between gap-4 py-3 text-sm"
+                  >
+                    <span className="font-medium text-zinc-950">
+                      {member.name}
+                    </span>
+                    <span className="text-zinc-500">
+                      {formatBirthday(member)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-zinc-500">
+                No birthdays in the next 7 days.
+              </p>
+            )}
+          </div>
+        </div>
       </div>
     </section>
   );
