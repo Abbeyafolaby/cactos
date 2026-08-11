@@ -11,8 +11,10 @@ type Transaction = {
   date: string;
   name: string;
   type: TransactionType;
+  category: string | null;
   amount: number | string;
   description: string;
+  notes: string | null;
 };
 
 type TransactionForm = {
@@ -63,6 +65,15 @@ function getAmount(amount: number | string) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [form, setForm] = useState<TransactionForm>(emptyForm);
@@ -77,7 +88,7 @@ export default function TransactionsPage() {
 
     const { data, error } = await supabase
       .from("transactions")
-      .select("id, date, name, type, amount, description")
+      .select("id, date, name, type, category, amount, description, notes")
       .order("date", { ascending: false });
 
     return { data: (data ?? []) as Transaction[], error };
@@ -196,13 +207,103 @@ export default function TransactionsPage() {
   const balance = totalIncome - totalExpenses;
   const balanceClass = balance >= 0 ? "text-emerald-700" : "text-red-700";
 
+  function exportToExcel() {
+    if (transactions.length === 0) {
+      setMessage("No transactions to export.");
+      return;
+    }
+
+    const summaryRows = [
+      ["Total Income", totalIncome],
+      ["Total Expenses", totalExpenses],
+      ["Balance", balance],
+    ]
+      .map(
+        ([label, value]) =>
+          `<tr><td>${escapeHtml(String(label))}</td><td>${formatAmount(
+            value as number,
+          )}</td></tr>`,
+      )
+      .join("");
+
+    const transactionRows = transactions
+      .map(
+        (transaction) => `
+          <tr>
+            <td>${escapeHtml(transaction.date)}</td>
+            <td>${escapeHtml(transaction.name)}</td>
+            <td>${escapeHtml(transaction.type)}</td>
+            <td>${escapeHtml(transaction.category ?? "")}</td>
+            <td>${escapeHtml(transaction.description)}</td>
+            <td>${getAmount(transaction.amount)}</td>
+            <td>${escapeHtml(transaction.notes ?? "")}</td>
+          </tr>
+        `,
+      )
+      .join("");
+
+    const workbook = `
+      <html>
+        <head>
+          <meta charset="utf-8" />
+        </head>
+        <body>
+          <table>
+            <thead>
+              <tr><th colspan="2">Finance Summary</th></tr>
+            </thead>
+            <tbody>${summaryRows}</tbody>
+          </table>
+          <br />
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Category</th>
+                <th>Description</th>
+                <th>Amount</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>${transactionRows}</tbody>
+          </table>
+        </body>
+      </html>
+    `;
+
+    const blob = new Blob([workbook], {
+      type: "application/vnd.ms-excel;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = "transactions.xls";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <section className="max-w-6xl">
-      <div>
-        <p className="text-sm font-medium text-zinc-500">Finance</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-          Transactions
-        </h1>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-zinc-500">Finance</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">
+            Transactions
+          </h1>
+        </div>
+        <button
+          type="button"
+          onClick={exportToExcel}
+          disabled={isLoading || transactions.length === 0}
+          className="w-fit rounded-md bg-white px-4 py-2 text-sm font-medium text-zinc-700 ring-1 ring-zinc-200 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:text-zinc-400"
+        >
+          Export to Excel
+        </button>
       </div>
 
       {!isSupabaseConfigured ? (
