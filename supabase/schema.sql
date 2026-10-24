@@ -4,6 +4,7 @@ create table if not exists public.members (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   voice_part text,
+  archived_at timestamptz,
   birthday_day integer check (birthday_day between 1 and 31),
   birthday_month integer check (birthday_month between 1 and 12),
   created_at timestamptz not null default now()

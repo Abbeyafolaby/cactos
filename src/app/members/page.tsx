@@ -5,7 +5,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import { isSupabaseConfigured, supabase } from "@/lib/supabaseClient";
 
-type VoicePart = "soprano" | "alto" | "tenor" | "bass";
+type VoicePart = "soprano" | "alto" | "tenor" | "bass" | "instrumentalist";
 
 type Member = {
   id: string;
@@ -13,6 +13,7 @@ type Member = {
   voice_part: VoicePart | null;
   birthday_day: number | null;
   birthday_month: number | null;
+  archived_at: string | null;
 };
 
 type MemberForm = {
@@ -22,7 +23,7 @@ type MemberForm = {
   birthday_month: string;
 };
 
-const voiceParts: VoicePart[] = ["soprano", "alto", "tenor", "bass"];
+const voiceParts: VoicePart[] = ["soprano", "alto", "tenor", "bass", "instrumentalist"];
 
 const days = Array.from({ length: 31 }, (_, index) => (index + 1).toString());
 
@@ -66,7 +67,12 @@ export default function MembersPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [view, setView] = useState<"active" | "archived">("active");
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const visibleMembers = members.filter((member) =>
+    view === "archived" ? !!member.archived_at : !member.archived_at,
+  );
 
   const fetchMembers = useCallback(async () => {
     if (!supabase) {
@@ -75,10 +81,15 @@ export default function MembersPage() {
 
     const { data, error } = await supabase
       .from("members")
-      .select("id, name, voice_part, birthday_day, birthday_month")
+      .select("id, name, voice_part, birthday_day, birthday_month, archived_at")
       .order("name", { ascending: true });
 
-    return { data: (data ?? []) as Member[], error };
+    return {
+      data: (data ?? []) as Member[],
+      error: error?.message.includes("archived_at")
+        ? { message: "Run supabase/update-members-archive.sql in the Supabase SQL Editor to enable member archiving, then refresh this page." }
+        : error,
+    };
   }, []);
 
   async function loadMembers() {
@@ -138,6 +149,30 @@ export default function MembersPage() {
       birthday_month: member.birthday_month?.toString() ?? "",
     });
     setMessage(null);
+  }
+
+  async function toggleArchived(member: Member) {
+    if (!supabase || updatingId || isSaving) return;
+
+    setUpdatingId(member.id);
+    setMessage(null);
+    const { data, error } = await supabase
+      .from("members")
+      .update({ archived_at: member.archived_at ? null : new Date().toISOString() })
+      .eq("id", member.id)
+      .select("id, archived_at")
+      .single();
+
+    if (error) {
+      setMessage(error.message);
+    } else {
+      setMembers((current) => current.map((item) =>
+        item.id === member.id ? { ...item, archived_at: data.archived_at } : item,
+      ));
+      if (editingId === member.id) resetForm();
+      setMessage(`${member.name} ${member.archived_at ? "restored to active members" : "archived"}.`);
+    }
+    setUpdatingId(null);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -209,8 +244,42 @@ export default function MembersPage() {
         </div>
       ) : null}
 
+      <div className="mt-6 flex gap-2" aria-label="Member status">
+        {(["active", "archived"] as const).map((status) => (
+          <button
+            key={status}
+            type="button"
+            aria-pressed={view === status}
+            onClick={() => { setView(status); resetForm(); }}
+            className={`rounded-md px-4 py-2 text-sm font-medium capitalize ${view === status ? "bg-zinc-950 text-white" : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"}`}
+          >
+            {status} ({isLoading ? "…" : members.filter((member) => status === "archived" ? !!member.archived_at : !member.archived_at).length})
+          </button>
+        ))}
+      </div>
+      <p className="mt-3 text-sm text-zinc-500">
+        Archived members are temporarily inactive. Restore them whenever they return.
+      </p>
+      <h2 className="mt-6 text-sm font-semibold capitalize">{view} members by part</h2>
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {[{ label: "Total", count: visibleMembers.length },
+          ...voiceParts.map((part) => ({ label: part, count: visibleMembers.filter((member) => member.voice_part === part).length })),
+          ...(visibleMembers.some((member) => !member.voice_part || !voiceParts.includes(member.voice_part))
+            ? [{ label: "Other / unassigned", count: visibleMembers.filter((member) => !member.voice_part || !voiceParts.includes(member.voice_part)).length }] : []),
+        ].map(({ label, count }) => (
+          <div key={label} className="rounded-md border border-zinc-200 bg-white p-4">
+            <p className="text-sm capitalize text-zinc-500">{label}</p>
+            <p className="mt-2 text-2xl font-semibold">{isLoading || message && members.length === 0 ? "—" : count}</p>
+          </div>
+        ))}
+      </div>
+
+      {message ? (
+        <p role="status" className="mt-4 rounded-md bg-zinc-100 p-3 text-sm text-zinc-700">{message}</p>
+      ) : null}
+
       <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+        <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-zinc-200 bg-zinc-50 text-xs font-semibold uppercase text-zinc-500">
               <tr>
@@ -227,8 +296,8 @@ export default function MembersPage() {
                     Loading members...
                   </td>
                 </tr>
-              ) : members.length > 0 ? (
-                members.map((member) => (
+              ) : visibleMembers.length > 0 ? (
+                visibleMembers.map((member) => (
                   <tr key={member.id}>
                     <td className="px-4 py-3 font-medium text-zinc-950">
                       <Link
@@ -248,9 +317,19 @@ export default function MembersPage() {
                       <button
                         type="button"
                         onClick={() => startEditing(member)}
+                        disabled={isSaving || updatingId !== null}
                         className="rounded-md px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-950"
                       >
                         Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void toggleArchived(member)}
+                        disabled={isSaving || updatingId !== null}
+                        aria-label={`${member.archived_at ? "Restore" : "Archive"} ${member.name}`}
+                        className="rounded-md px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                      >
+                        {updatingId === member.id ? "Saving..." : member.archived_at ? "Restore" : "Archive"}
                       </button>
                     </td>
                   </tr>
@@ -258,7 +337,7 @@ export default function MembersPage() {
               ) : (
                 <tr>
                   <td className="px-4 py-6 text-zinc-500" colSpan={4}>
-                    No members yet.
+                    No {view} members.
                   </td>
                 </tr>
               )}
@@ -363,16 +442,10 @@ export default function MembersPage() {
             </div>
           </div>
 
-          {message ? (
-            <p className="mt-4 rounded-md bg-zinc-100 p-3 text-sm text-zinc-700">
-              {message}
-            </p>
-          ) : null}
-
           <div className="mt-5 flex gap-2">
             <button
               type="submit"
-              disabled={isSaving || !isSupabaseConfigured}
+              disabled={isSaving || updatingId !== null || !isSupabaseConfigured}
               className="rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
             >
               {isSaving ? "Saving..." : editingId ? "Save changes" : "Add"}

@@ -22,6 +22,11 @@ Run the SQL files in the Supabase SQL Editor:
 
 1. `supabase/schema.sql` for a fresh database.
 2. `supabase/restrict-to-authenticated.sql` for an existing database or after enabling Supabase Auth.
+3. `supabase/update-members-archive.sql` for an existing database to enable member archiving.
+
+The Members page includes Instrumentalist as a voice part, totals for each part in
+the selected Active or Archived view, and Archive/Restore actions. Archiving keeps
+member details and attendance history intact.
 
 Create at least one admin user in Supabase Auth. The app uses email/password sign-in.
 
